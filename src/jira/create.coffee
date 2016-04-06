@@ -19,6 +19,9 @@ class Create
         [ __, toState] =  summary.match Config.transitions.shouldRegex
       summary = summary.replace(Config.transitions.shouldRegex, "") if toState
 
+    if Config.maps.fixVersions
+      fixVersion = Config.maps.fixVersions[project]
+
     if Config.mention.regex.test summary
       assignee = summary.match(Config.mention.regex)[1]
       summary = summary.replace Config.mention.regex, ""
@@ -54,6 +57,7 @@ class Create
       """
       issue.fields.reporter = reporter if reporter
       issue.fields.priority = id: priority.id if priority
+      issue.fields.fixVersions = [name: fixVersion] if fixVersion
       Create.fromJSON issue
     .then (json) ->
       Create.fromKey(json.key)

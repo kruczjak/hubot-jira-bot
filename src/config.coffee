@@ -8,6 +8,9 @@ class Config
     transitions:
       if process.env.HUBOT_JIRA_TRANSITIONS_MAP
         JSON.parse process.env.HUBOT_JIRA_TRANSITIONS_MAP
+    fixVersions:
+      if process.env.HUBOT_JIRA_FIX_VERSIONS_MAP
+        JSON.parse process.env.HUBOT_JIRA_FIX_VERSIONS_MAP
 
   @projects:
     prefixes: (key for team, key of Config.maps.projects).reduce (x,y) -> x + "-|" + y
@@ -18,7 +21,7 @@ class Config
       username: process.env.HUBOT_JIRA_USERNAME
       password: process.env.HUBOT_JIRA_PASSWORD
       expand: "transitions"
-      fields: ["issuetype", "status", "assignee", "reporter", "summary", "description", "labels", "project"]
+      fields: ["issuetype", "status", "assignee", "reporter", "summary", "description", "labels", "project", "fixVersions"]
       mentionRegex: /(?:\[~([\w._]*)\])/i
       mentionRegexGlobal: /(?:\[~([\w._]*)\])/gi
   @jira.urlRegexBase = "#{Config.jira.url}/browse/".replace /[-\/\\^$*+?.()|[\]{}]/g, '\\$&'
