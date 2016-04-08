@@ -35,7 +35,7 @@ class Config
     token: process.env.HUBOT_SLACK_TOKEN
 
   @ticket:
-    regex: eval "/(^|\\s)(" + Config.projects.prefixes + "-)(\\d+)\\b/gi"
+    regex: eval "/(^)(" + Config.projects.prefixes + "-)(\\d+)\\b/gi"
 
   commands = (command for command, type of Config.maps.types).reduce (x,y) -> x + "|" + y
   @commands:
