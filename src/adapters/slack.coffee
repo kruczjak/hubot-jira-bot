@@ -143,6 +143,9 @@ class Slack extends GenericAdapter
       throw "Cannot find jira ticket" unless ticket and ticket.length is 2
       return ticket[1]
     .catch (error) ->
-      @robot.logger.info error
+      @robot.logger.error error
+
+  getPermalink: (msg) ->
+    "https://#{msg.robot.adapter.client.team.domain}.slack.com/archives/#{msg.message.room}/p#{msg.message.id.replace '.', ''}"
 
 module.exports = Slack

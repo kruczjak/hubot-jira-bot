@@ -15,7 +15,7 @@ class Utils
         "Authorization": 'Basic ' + new Buffer("#{Config.jira.username}:#{Config.jira.password}").toString('base64')
     options = _(options).extend opts
 
-    Utils.robot.logger.info "Fetching: #{url}"
+    Utils.robot.logger.debug "Fetching: #{url}"
     fetch(url,options).then (response) ->
       if response.status >= 200 and response.status < 300
         return response
@@ -37,6 +37,10 @@ class Utils
           throw message
       catch e
         throw error
+
+  @lookupRoomsForProject: (project) ->
+    results = _(Config.maps.projects).pick (p) -> p is project
+    _(results).keys()
 
   @lookupChatUser: (username) ->
     users = Utils.robot.brain.users()

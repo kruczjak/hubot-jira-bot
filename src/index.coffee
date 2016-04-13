@@ -15,16 +15,17 @@
 #   HUBOT_JIRA_URL (format: "https://jira-domain.com:9090")
 #   HUBOT_JIRA_USERNAME
 #   HUBOT_JIRA_PASSWORD
-#   HUBOT_JIRA_TYPES_MAP  \{\"story\":\"Story\ \/\ Feature\",\"bug\":\"Bug\",\"task\":\"Task\"\}
-#   HUBOT_JIRA_PROJECTS_MAP  \{\"web\":\"WEB\",\"android\":\"AN\",\"ios\":\"IOS\",\"platform\":\"PLAT\"\}
-#   HUBOT_JIRA_TRANSITIONS_MAP \[\{\"name\":\"triage\",\"jira\":\"Triage\"\},\{\"name\":\"icebox\",\"jira\":\"Icebox\"\},\{\"name\":\"backlog\",\"jira\":\"Backlog\"\},\{\"name\":\"devready\",\"jira\":\"Selected\ for\ Development\"\},\{\"name\":\"inprogress\",\"jira\":\"In\ Progress\"\},\{\"name\":\"design\",\"jira\":\"Design\ Triage\"\}\]
-#   HUBOT_JIRA_PRIORITIES_MAP \[\{\"name\":\"Blocker\",\"id\":\"1\"\},\{\"name\":\"Critical\",\"id\":\"2\"\},\{\"name\":\"Major\",\"id\":\"3\"\},\{\"name\":\"Minor\",\"id\":\"4\"\},\{\"name\":\"Trivial\",\"id\":\"5\"\}\]
+#   HUBOT_JIRA_TYPES_MAP  {"story":"Story / Feature","bug":"Bug","task":"Task"}
+#   HUBOT_JIRA_PROJECTS_MAP  {"web":"WEB","android":"AN","ios":"IOS","platform":"PLAT"}
+#   HUBOT_JIRA_TRANSITIONS_MAP [{"name":"triage","jira":"Triage"},{"name":"icebox","jira":"Icebox"},{"name":"backlog","jira":"Backlog"},{"name":"devready","jira":"Selected for Development"},{"name":"inprogress","jira":"In Progress"},{"name":"design","jira":"Design Triage"}]
+#   HUBOT_JIRA_PRIORITIES_MAP [{"name":"Blocker","id":"1"},{"name":"Critical","id":"2"},{"name":"Major","id":"3"},{"name":"Minor","id":"4"},{"name":"Trivial","id":"5"}]
 #   HUBOT_GITHUB_TOKEN - Github Application Token
 #
 # Author:
 #   ndaversa
 
 _ = require "underscore"
+moment = require "moment"
 
 Config = require "./config"
 Github = require "./github"
@@ -35,11 +36,16 @@ Utils = require "./utils"
 
 class JiraBot
 
+  @JIRA_ROOM_TICKET_MENTIONS: "jira-room-ticket-mentions"
+
   constructor: (@robot) ->
     return new JiraBot @robot unless @ instanceof JiraBot
+    Utils.robot = @robot
+    Utils.JiraBot = @
+    @robot.brain.once "loaded", =>
+      @mentions = @robot.brain.get(JiraBot.JIRA_ROOM_TICKET_MENTIONS) or {}
 
     @webhook = new Jira.Webhook @robot
-    Utils.robot = @robot
     switch @robot.adapterName
       when "slack"
         @adapter = new Adapters.Slack @robot
@@ -50,14 +56,49 @@ class JiraBot
     @registerEventListeners()
     @registerRobotResponses()
 
-  send: (context, message) ->
+  send: (context, message, filter=yes) ->
+    message = @filterAttachmentsForPreviousMentions context, message if filter
     @adapter.send context, message
+
+  filterAttachmentsForPreviousMentions: (context, message) ->
+    return message if _(message).isString()
+    return message unless @mentions?
+    return message unless message.attachments?.length > 0
+    room = context.message.room
+
+    removals = []
+    for attachment in message.attachments
+      keep = yes
+      key = attachment.author_name?.trim().toUpperCase()
+      continue unless Config.ticket.regex.test key
+      if @mentions[room]
+        if time = @mentions[room].tickets[key]
+          keep = moment().isAfter time
+      else
+        @mentions[room] = tickets: {}
+      @mentions[room].tickets[key] = moment().add 5, 'minutes' if keep
+
+      #Cleanup other mention expiries
+      for r, obj of @mentions
+        for k, t of @mentions[r].tickets
+          if moment().isAfter t
+            delete @mentions[r].tickets[k]
+
+      @robot.brain.set JiraBot.JIRA_ROOM_TICKET_MENTIONS, @mentions
+      @robot.brain.save()
+
+      unless keep
+        @robot.logger.info "Supressing ticket attachment for #{key} in #{room}"
+        removals.push attachment
+
+    message.attachments = _(message.attachments).difference removals
+    return message
 
   matchJiraTicket: (message) ->
     if message.match?
-      matches = message.match(Config.ticket.regex)
+      matches = message.match(Config.ticket.regexGlobal)
     else if message.message?.rawText?.match?
-      matches = message.message.rawText.match(Config.ticket.regex)
+      matches = message.message.rawText.match(Config.ticket.regexGlobal)
 
     if matches and matches[0]
       return matches
@@ -66,13 +107,13 @@ class JiraBot
         attachments = message.message.rawMessage.attachments
         for attachment in attachments
           if attachment.text?
-            matches = attachment.text.match(Config.ticket.regex)
+            matches = attachment.text.match(Config.ticket.regexGlobal)
             if matches and matches[0]
               return matches
     return false
 
   prepareResponseForJiraTickets: (msg) ->
-    Promise.all(msg.match.map (key) ->
+    Promise.all(msg.match.map (key) =>
       _attachments = []
       Jira.Create.fromKey(key).then (ticket) ->
         _attachments.push ticket.toAttachment()
@@ -154,6 +195,14 @@ class JiraBot
       robot.logger.error error.stack
       @send message: room: room, "Unable to create ticket #{error}"
 
+    #Created in another room
+    @robot.on "JiraTicketCreatedElsewhere", (ticket, msg) =>
+      channel = @robot.adapter.client.getChannelGroupOrDMByName msg.message.room
+      for r in Utils.lookupRoomsForProject ticket.fields.project.key
+        @send message: room: r,
+          text: "Ticket created in <##{channel.id}|#{channel.name}> by <@#{msg.message.user.id}>"
+          attachments: [ ticket.toAttachment no ]
+
     #Clone
     @robot.on "JiraTicketCloned", (ticket, room, clone, msg) =>
       channel = @robot.adapter.client.getChannelGroupOrDMByName msg.message.room
@@ -216,6 +265,16 @@ class JiraBot
       @robot.logger.error error.stack
       @send message: room: room, "#{error}"
 
+    #Labels
+    @robot.on "JiraTicketLabelled", (ticket, room, includeAttachment=no) =>
+      @send message: room: room,
+        text: "Added labels to #{ticket.key}"
+        attachments: [ ticket.toAttachment no ] if includeAttachment
+
+    @robot.on "JiraTicketLabelFailed", (error, room) =>
+      @robot.logger.error error.stack
+      @send message: room: room, "#{error}"
+
     #Comments
     @robot.on "JiraTicketCommented", (ticket, room, includeAttachment=no) =>
       @send message: room: room,
@@ -270,6 +329,7 @@ class JiraBot
         @send msg,
           text: results.text
           attachments: attachments
+        , no
       .catch (error) =>
         @send msg, "Unable to search for `#{query}` :sadpanda:"
         @robot.logger.error error.stack
@@ -279,7 +339,7 @@ class JiraBot
       @robot.hear Config.transitions.regex, (msg) =>
         msg.finish()
         [ __, key, toState ] = msg.match
-        Jira.Transition.forTicketKeyToState key, toState, msg, yes
+        Jira.Transition.forTicketKeyToState key, toState, msg, no
 
     #Clone
     @robot.hear Config.clone.regex, (msg) =>
@@ -292,22 +352,34 @@ class JiraBot
     @robot.hear Config.watch.regex, (msg) =>
       msg.finish()
       [ __, key, remove, person ] = msg.match
+
       if remove
-        Jira.Watch.forTicketKeyRemovePerson key, person, msg, yes
+        Jira.Watch.forTicketKeyRemovePerson key, person, msg, no
       else
-        Jira.Watch.forTicketKeyForPerson key, person, msg, yes
+        Jira.Watch.forTicketKeyForPerson key, person, msg, no
 
     #Rank
     @robot.hear Config.rank.regex, (msg) =>
       msg.finish()
       [ __, key, direction ] = msg.match
-      Jira.Rank.forTicketKeyByDirection key, direction, msg, yes
+      Jira.Rank.forTicketKeyByDirection key, direction, msg, no
+
+    #Labels
+    @robot.hear Config.labels.addRegex, (msg) =>
+      msg.finish()
+      [ __, key ] = msg.match
+      {input: input} = msg.match
+      labels = []
+      labels = (input.match(Config.labels.regex).map((label) -> label.replace('#', '').trim())).concat(labels)
+
+      Jira.Labels.forTicketKeyWith key, labels, msg, no
 
     #Comment
     @robot.hear Config.comment.regex, (msg) =>
       msg.finish()
       [ __, key, comment ] = msg.match
-      Jira.Comment.forTicketKeyWith key, comment, msg, yes
+
+      Jira.Comment.forTicketKeyWith key, comment, msg, no
 
     #Subtask
     @robot.respond Config.subtask.regex, (msg) =>
@@ -319,15 +391,16 @@ class JiraBot
     @robot.hear Config.assign.regex, (msg) =>
       msg.finish()
       [ __, key, remove, person ] = msg.match
+
       if remove
-        Jira.Assign.forTicketKeyToUnassigned key, msg, yes
+        Jira.Assign.forTicketKeyToUnassigned key, msg, no
       else
-        Jira.Assign.forTicketKeyToPerson key, person, msg, yes
+        Jira.Assign.forTicketKeyToPerson key, person, msg, no
 
     #Create
     @robot.respond Config.commands.regex, (msg) =>
-      [ __, command, summary ] = msg.match
-      room = msg.message.room
+      [ __, project, command, summary ] = msg.match
+      room = project or msg.message.room
       project = Config.maps.projects[room]
       type = Config.maps.types[command]
 

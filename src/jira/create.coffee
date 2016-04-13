@@ -45,15 +45,15 @@ class Create
         fields:
           project: key: project
           summary: summary
-          labels: labels
           description: ""
           issuetype: name: type
 
       _(issue.fields).extend fields if fields
+      issue.fields.labels = _(issue.fields.labels).union labels
       issue.fields.description += """
         #{(if description then description + "\n\n" else "")}
         Reported by #{msg.message.user.name} in ##{msg.message.room} on #{msg.robot.adapterName}
-        https://#{msg.robot.adapter.client.team.domain}.slack.com/archives/#{msg.message.room}/p#{msg.message.id.replace '.', ''}
+        #{Utils.JiraBot.adapter.getPermalink msg}
       """
       issue.fields.reporter = reporter if reporter
       issue.fields.priority = id: priority.id if priority
@@ -62,7 +62,9 @@ class Create
     .then (json) ->
       Create.fromKey(json.key)
       .then (ticket) ->
+        roomProject = Config.maps.projects[msg.message.room]
         Utils.robot.emit "JiraTicketCreated", ticket, msg.message.room
+        Utils.robot.emit "JiraTicketCreatedElsewhere", ticket, msg unless roomProject is project
         ticket
       .then (ticket) ->
         Transition.forTicketToState ticket, toState, msg, no if toState
@@ -95,6 +97,7 @@ class Create
     .then (parent) ->
       Create.with parent.fields.project.key, "Sub-task", summary, msg,
         parent: key: parent.key
+        labels: parent.fields.labels or []
         description: "Sub-task of #{key}\n\n"
 
 module.exports = Create

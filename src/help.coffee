@@ -7,7 +7,7 @@ class Help
   @forTopic: (topic, robot) ->
     overview = """
     *The Definitive #{robot.name.toUpperCase()} JIRA Manual*
-    <@#{robot.adapter.self.id}> can help you *search* for JIRA tickets, *open*
+    @#{robot.name} can help you *search* for JIRA tickets, *open*
     them, *transition* them thru different states, *comment* on them, *rank*
     them _up_ or _down_, start or stop *watching* them or change who is
     *assigned* to a ticket
@@ -15,9 +15,11 @@ class Help
 
     opening = """
     *Opening Tickets*
-    > #{robot.name} `<type>` `<title>` [`<description>`]
+    > #{robot.name} [`<project>`] `<type>` `<title>` [`<description>`]
 
-    Where `<type>` is one of the following: #{(_(Config.maps.types).keys().map (t) -> "`#{t}`").join ',  '}
+    You can omit `<project>` when using the command in the desired projects channel
+    Otherwise you can specify one of the following for `<project>`: #{(_(Config.maps.projects).keys().map (c) -> "`##{c}`").join ',  '}
+    `<type>` is one of the following: #{(_(Config.maps.types).keys().map (t) -> "`#{t}`").join ',  '}
     `<description>` is optional and is surrounded with single or triple backticks
     and can be used to provide a more detailed description for the ticket.
     `<title>` is a short summary of the ticket
@@ -62,6 +64,14 @@ class Help
     of column for the current state
     """
 
+    labels = """
+    *Adding labels to a Ticket*
+    > `<ticket>` < `#label1 #label2 #label3`
+
+    Where `<ticket>` is the JIRA ticket number
+    """
+
+
     comment = """
     *Commenting on a Ticket*
     > `<ticket>` < `<comment>`
@@ -100,7 +110,7 @@ class Help
     *Ticket Notifications*
 
     Whenever you begin watching a JIRA ticket you will be notified (via a direct
-    message from <@#{robot.adapter.self.id}>) whenever any of the following events occur:
+    message from @#{robot.name}) whenever any of the following events occur:
           - a comment is left on the ticket
           - the ticket is in progress
           - the ticket is resolved
@@ -131,6 +141,8 @@ class Help
       responses = [ rank ]
     else if _(["comment", "comments"]).contains topic
       responses = [ comment ]
+    else if _(["labels", "label"]).contains topic
+      responses = [ labels ]
     else if _(["assign", "assignment"]).contains topic
       responses = [ assignment ]
     else if _(["transition", "transitions", "state", "move"]).contains topic
@@ -140,7 +152,7 @@ class Help
     else if _(["watch", "watching", "notifications", "notify"]).contains topic
       responses = [ watch, notifications ]
     else
-      responses = [ overview, opening, subtask, clone, rank, comment, assignment, transition, watch, notifications, search ]
+      responses = [ overview, opening, subtask, clone, rank, comment, labels, assignment, transition, watch, notifications, search ]
 
     return "\n#{responses.join '\n\n\n'}"
 
