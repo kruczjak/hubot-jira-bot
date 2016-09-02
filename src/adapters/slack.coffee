@@ -37,7 +37,7 @@ class Slack extends GenericAdapter
         attachments.push a
         attachments.push @buttonAttachmentsForState "mention", a if a and a.type is "JiraTicketAttachment"
       payload.attachments = attachments
-    rc = @robot.adapter.customMessage payload
+    rc = @robot.adapter.send payload
 
     # Could not find existing conversation
     # so client bails on sending see issue: https://github.com/slackhq/hubot-slack/issues/256
