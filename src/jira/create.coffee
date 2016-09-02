@@ -13,33 +13,16 @@ class Create
       method: "POST"
       body: JSON.stringify json
 
-  @with: (project, type, summary, msg, fields) ->
-    if Config.maps.transitions
-      if Config.transitions.shouldRegex.test(summary)
-        [ __, toState] =  summary.match Config.transitions.shouldRegex
-      summary = summary.replace(Config.transitions.shouldRegex, "") if toState
-
+  @with: (project, type, summary, msg, fields, emit=yes) ->
     if Config.maps.fixVersions
       fixVersion = Config.maps.fixVersions[project]
-
-    if Config.mention.regex.test summary
-      assignee = summary.match(Config.mention.regex)[1]
-      summary = summary.replace Config.mention.regex, ""
+    toState = null
+    assignee = null
 
     User.withEmail(msg.message.user.email_address)
     .then (reporter) ->
-      labels = []
-      description = summary.match(Config.quote.regex)[1] if Config.quote.regex.test(summary)
-      summary = summary.replace(Config.quote.regex, "") if description
-
-      if Config.labels.regex.test summary
-        labels = (summary.match(Config.labels.regex).map((label) -> label.replace('#', '').trim())).concat(labels)
-        summary = summary.replace Config.labels.regex, ""
-
-      if Config.maps.priorities and Config.priority.regex.test summary
-        priority = summary.match(Config.priority.regex)[1]
-        priority = Config.maps.priorities.find (p) -> p.name.toLowerCase() is priority.toLowerCase()
-        summary = summary.replace Config.priority.regex, ""
+      { summary, description, toState, assignee, labels, priority } = Utils.extract.all summary
+      labels.unshift msg.message.room
 
       issue =
         fields:
@@ -62,19 +45,36 @@ class Create
     .then (json) ->
       Create.fromKey(json.key)
       .then (ticket) ->
+        Promise.all([
+          Transition.forTicketToState ticket, toState, msg, no, no if toState
+          Assign.forTicketToPerson ticket, assignee, msg, no, no if assignee
+          ticket
+        ])
+        .catch (error) ->
+          Utils.robot.logger.error error
+          [ undefined, text:error, ticket]
+      .then (results) ->
+        [ transition, assignee, ticket ] = results
         roomProject = Config.maps.projects[msg.message.room]
-        Utils.robot.emit "JiraTicketCreated", ticket, msg.message.room
-        Utils.robot.emit "JiraTicketCreatedElsewhere", ticket, msg unless roomProject is project
-        ticket
-      .then (ticket) ->
-        Transition.forTicketToState ticket, toState, msg, no if toState
-        Assign.forTicketToPerson ticket, assignee, msg, no if assignee
+        if emit
+          Utils.robot.emit "JiraTicketCreated",
+            ticket: ticket
+            room: msg.message.room
+            transition: transition
+            assignee: assignee
+        unless emit and roomProject is project
+          Utils.robot.emit "JiraTicketCreatedElsewhere",
+            ticket: ticket
+            room: msg.message.room
+            user: msg.message.user
+            transition: transition
+            assignee: assignee
         ticket
       .catch (error) ->
         msg.robot.logger.error error.stack
     .catch (error) ->
       Utils.robot.logger.error error.stack
-      Utils.robot.emit "JiraTicketCreationFailed", error, msg.message.room
+      Utils.robot.emit "JiraTicketCreationFailed", error, msg.message.room if emit
       Promise.reject error
 
   @fromKey: (key) ->
@@ -92,12 +92,13 @@ class Create
     .then (jsons) ->
       new Ticket _(jsons[0]).extend _(jsons[1]).pick("watchers")
 
-  @subtaskFromKeyWith: (key, summary, msg) ->
+  @subtaskFromKeyWith: (key, summary, msg, emit=yes) ->
     Create.fromKey(key)
     .then (parent) ->
       Create.with parent.fields.project.key, "Sub-task", summary, msg,
         parent: key: parent.key
         labels: parent.fields.labels or []
         description: "Sub-task of #{key}\n\n"
+      , emit
 
 module.exports = Create

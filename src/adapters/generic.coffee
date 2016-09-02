@@ -1,7 +1,5 @@
 _ = require "underscore"
 
-Utils = require "../utils"
-
 class GenericAdapter
   @JIRA_NOTIFICATIONS_DISABLED: "jira-notifications-disabled"
   @JIRA_DM_COUNTS: "jira-dm-counts"
@@ -17,7 +15,7 @@ class GenericAdapter
   disableNotificationsFor: (user) ->
     @robot.logger.info "Disabling JIRA notifications for #{user.name}"
     @disabledUsers.push user.id
-    @robot.brain.set GenericAdapter.JIRA_NOTIFICATIONS_DISABLED, @disabledUsers
+    @robot.brain.set GenericAdapter.JIRA_NOTIFICATIONS_DISABLED, _(@disabledUsers).unique()
     @robot.brain.save()
 
   enableNotificationsFor: (user) ->
@@ -62,10 +60,10 @@ class GenericAdapter
     users = [ users ] unless _(users).isArray()
     for user in users when user
       if _(@disabledUsers).contains user.id
-        @robot.logger.info "JIRA Notification surpressed for #{user.name}"
+        @robot.logger.debug "JIRA Notification surpressed for #{user.name}"
       else
         if message.author? and user.email_address is message.author.emailAddress
-          @robot.logger.info "JIRA Notification surpressed for #{user.name} because it would be a self-notification"
+          @robot.logger.debug "JIRA Notification surpressed for #{user.name} because it would be a self-notification"
           continue
         message.text += "\n#{message.footer}" if message.text and message.footer and @getDMCountFor(user) < 3
         @send message: room: user.name, message

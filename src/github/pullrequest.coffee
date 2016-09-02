@@ -1,14 +1,18 @@
+Octokat = require "octokat"
 moment = require "moment"
 
+Config = require "../config"
 Utils = require "../utils"
+
+octo = new Octokat token: Config.github.token
 
 class PullRequest
   constructor: (json) ->
     @[k] = v for k,v of json
 
   toAttachment: ->
-    Utils.lookupUserWithGithub(@assignee)
-    .then (assignee) =>
+    github = octo.fromUrl(@assignee.url) if @assignee?.url
+    Utils.lookupUserWithGithub(github).then (assignee) =>
       color: "#ff9933"
       author_name: @user.login
       author_icon: @user.avatarUrl
