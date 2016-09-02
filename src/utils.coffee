@@ -50,11 +50,11 @@ class Utils
       return result[0]
     return null
 
-  @lookupUserWithJira: (jira, fallback=no) ->
+  @lookupUserWithJira: (jira, fallback=no, before_user='@') ->
     users = Utils.robot.brain.users()
     result = (users[user] for user of users when users[user].email_address is jira.emailAddress) if jira
     if result?.length is 1
-      return if fallback then result[0].name else "<@#{result[0].id}>"
+      return if fallback then result[0].name else "<#{before_user}#{result[0].id}>"
     else if jira
       return jira.displayName
     else
