@@ -8,6 +8,18 @@ GenericAdapter = require "./generic"
 class Slack extends GenericAdapter
   constructor: (@robot) ->
     super @robot
+
+    @robot.router.post "/hubot/slack-events", (req, res) =>
+      return unless req.body?
+      try
+        payload = JSON.parse req.body.payload
+        return unless payload.token is Config.slack.verification.token
+      catch e
+        return
+
+      @onButtonActions(payload).then ->
+        res.json payload.original_message
+
     # Since the slack client used by hubot-slack has not yet been updated
     # to the latest version, we do not get events for reactions.
     # Also there doesn't seem to be a better way to get a reference to
@@ -23,6 +35,7 @@ class Slack extends GenericAdapter
       @onJiraTicketMessageAttachment msg if @hasJiraAttachment msg
       return unless msg.item_user is @robot.adapter.self.id
       return unless msg.user isnt @robot.adapter.self.id
+      msg.user = @robot.brain.users()[msg.user]
       if msg.type is "reaction_added"
         @onReactionAdded msg
       else if msg.type is "reaction_removed"
@@ -42,6 +55,13 @@ class Slack extends GenericAdapter
       payload.text = message
     else
       payload = _(payload).extend message
+
+    if Config.slack.verification.token and payload.attachments?.length > 0
+      attachments = []
+      for ja in payload.attachments
+        attachments.push ja
+        attachments.push @buttonAttachmentsForState "mention", ja if ja.type is "JiraTicketAttachment"
+      payload.attachments = attachments
     rc = @robot.adapter.customMessage payload
 
     # Could not find existing conversation
@@ -75,7 +95,7 @@ class Slack extends GenericAdapter
             robot: @robot
             message:
               room: msg.item.channel
-              user: @robot.adapter.client.getUserByID(msg.user)
+              user: msg.user
         when "raising_hand"
           Jira.Assign.forTicketKeyToUnassigned key,
             robot: @robot
@@ -93,13 +113,13 @@ class Slack extends GenericAdapter
             robot: @robot
             message:
               room: msg.item.channel
-              user: @robot.adapter.client.getUserByID(msg.user)
+              user: msg.user
         when "eyes"
           Jira.Watch.forTicketKeyForPerson key, null,
             robot: @robot
             message:
               room: msg.item.channel
-              user: @robot.adapter.client.getUserByID(msg.user)
+              user: msg.user
         when "soon", "fast_forward"
           term = if msg.reaction is "soon" then "selected" else "progress"
           result = Utils.fuzzyFind term, Config.maps.transitions, ['jira']
@@ -110,11 +130,67 @@ class Slack extends GenericAdapter
                 room: msg.item.channel
                 user: msg.user
         when "raising_hand"
-          Jira.Assign.forTicketKeyToPerson key, @robot.adapter.client.getUserByID(msg.user).name,
+          Jira.Assign.forTicketKeyToPerson key, msg.user.name,
             robot: @robot
             message:
               room: msg.item.channel
               user: msg.user
+
+  onButtonActions: (payload) ->
+    Promise.all payload.actions.map (action) => @handleButtonAction payload, action
+
+  handleButtonAction: (payload, action) ->
+    return new Promise (resolve, reject) =>
+      key = payload.callback_id
+      user = payload.user
+      msg = payload.original_message
+      envelope =
+        robot: emit: -> #Discard emitted messages, slack attachments are enough communication
+        message: user: user
+
+      switch action.name
+        when "rank"
+          Jira.Rank.forTicketKeyByDirection key, "up", envelope
+          msg.attachments.push
+            text: "<@#{user.id}|#{user.name}> ranked this ticket to the top"
+          resolve()
+        when "watch"
+          Jira.Create.fromKey(key)
+          .then (ticket) =>
+            watchers = Utils.lookupChatUsersWithJira ticket.watchers
+            if _(watchers).findWhere(id: user.id)
+              msg.attachments.push
+                text: "<@#{user.id}|#{user.name}> has stopped watching this ticket"
+              Jira.Watch.forTicketKeyRemovePerson key, null, envelope
+            else
+              msg.attachments.push
+                text: "<@#{user.id}|#{user.name}> is now watching this ticket"
+              Jira.Watch.forTicketKeyForPerson key, user.name, envelope
+            resolve()
+        when "assign"
+          Jira.Create.fromKey(key)
+          .then (ticket) =>
+            assignee = Utils.lookupChatUserWithJira ticket.fields.assignee
+            if assignee and assignee.id is user.id
+              Jira.Assign.forTicketKeyToUnassigned key, envelope
+              msg.attachments.push
+                text: "<@#{user.id}|#{user.name}> has unassigned themself"
+            else
+              Jira.Assign.forTicketKeyToPerson key, user.name, envelope
+              msg.attachments.push
+                text: "<@#{user.id}|#{user.name}> is now assigned to this ticket"
+            resolve()
+        else
+          result = Utils.fuzzyFind action.value, Config.maps.transitions, ['jira']
+          if result
+            msg.attachments.push @buttonAttachmentsForState action.name,
+              key: key
+              text: "<@#{user.id}|#{user.name}> transitioned this ticket to #{result.jira}"
+            Jira.Transition.forTicketKeyToState key, result.name, envelope
+          else
+            msg.attachments.push
+              text: "Unable to to process #{action.name}"
+          resolve()
 
   getTicketKeyInChannelByTs: (channel, ts) ->
     switch channel[0]
@@ -122,8 +198,10 @@ class Slack extends GenericAdapter
         endpoint = "groups"
       when "C"
         endpoint = "channels"
+      when "D"
+        endpoint = "im"
       else
-        return
+        return Promise.reject()
 
     params =
       channel: channel
@@ -131,7 +209,7 @@ class Slack extends GenericAdapter
       oldest: ts
       inclusive: 1
       count: 1
-      token: Config.slack.token
+      token: Config.slack.api.token
 
     Utils.fetch("https://slack.com/api/#{endpoint}.history#{Utils.buildQueryString params}")
     .then (json) ->
@@ -147,5 +225,24 @@ class Slack extends GenericAdapter
 
   getPermalink: (msg) ->
     "https://#{msg.robot.adapter.client.team.domain}.slack.com/archives/#{msg.message.room}/p#{msg.message.id.replace '.', ''}"
+
+  buttonAttachmentsForState: (state="mention", details) ->
+    key = details.author_name or details.key
+    return {} unless key and key.length > 0
+    project = key.split("-")[0]
+    return {} unless project
+    buttons = Config.slack.buttons
+    return {} unless buttons
+    map = Config.slack.project.button.state.map[project] or Config.slack.project.button.state.map.default
+    return {} unless map
+    actions = []
+    actions.push buttons[button] for button in map[state]
+
+    fallback: "Unable to display quick action buttons"
+    attachment_type: "default"
+    callback_id: key
+    color: details.color
+    actions: actions
+    text: details.text
 
 module.exports = Slack

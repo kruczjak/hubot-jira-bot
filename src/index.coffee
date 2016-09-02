@@ -1,8 +1,8 @@
 # Description:
-#  Lets you search for JIRA tickets, open
-#  them, transition them thru different states, comment on them, rank
-#  them up or down, start or stop watching them or change who is
-#  assigned to a ticket
+# Lets you search for JIRA tickets, open
+# them, transition them thru different states, comment on them, rank
+# them up or down, start or stop watching them or change who is
+# assigned to a ticket. Also, notifications for mentions, assignments and watched tickets.
 #
 # Dependencies:
 # - moment
@@ -11,18 +11,11 @@
 # - underscore
 # - fuse.js
 #
-# Configuration:
-#   HUBOT_JIRA_URL (format: "https://jira-domain.com:9090")
-#   HUBOT_JIRA_USERNAME
-#   HUBOT_JIRA_PASSWORD
-#   HUBOT_JIRA_TYPES_MAP  {"story":"Story / Feature","bug":"Bug","task":"Task"}
-#   HUBOT_JIRA_PROJECTS_MAP  {"web":"WEB","android":"AN","ios":"IOS","platform":"PLAT"}
-#   HUBOT_JIRA_TRANSITIONS_MAP [{"name":"triage","jira":"Triage"},{"name":"icebox","jira":"Icebox"},{"name":"backlog","jira":"Backlog"},{"name":"devready","jira":"Selected for Development"},{"name":"inprogress","jira":"In Progress"},{"name":"design","jira":"Design Triage"}]
-#   HUBOT_JIRA_PRIORITIES_MAP [{"name":"Blocker","id":"1"},{"name":"Critical","id":"2"},{"name":"Major","id":"3"},{"name":"Minor","id":"4"},{"name":"Trivial","id":"5"}]
-#   HUBOT_GITHUB_TOKEN - Github Application Token
-#
 # Author:
 #   ndaversa
+#
+# Contributions:
+#   sjakubowski
 
 _ = require "underscore"
 moment = require "moment"
@@ -36,14 +29,10 @@ Utils = require "./utils"
 
 class JiraBot
 
-  @JIRA_ROOM_TICKET_MENTIONS: "jira-room-ticket-mentions"
-
   constructor: (@robot) ->
     return new JiraBot @robot unless @ instanceof JiraBot
     Utils.robot = @robot
     Utils.JiraBot = @
-    @robot.brain.once "loaded", =>
-      @mentions = @robot.brain.get(JiraBot.JIRA_ROOM_TICKET_MENTIONS) or {}
 
     @webhook = new Jira.Webhook @robot
     switch @robot.adapterName
@@ -62,34 +51,20 @@ class JiraBot
 
   filterAttachmentsForPreviousMentions: (context, message) ->
     return message if _(message).isString()
-    return message unless @mentions?
     return message unless message.attachments?.length > 0
     room = context.message.room
 
     removals = []
     for attachment in message.attachments
-      keep = yes
-      key = attachment.author_name?.trim().toUpperCase()
-      continue unless Config.ticket.regex.test key
-      if @mentions[room]
-        if time = @mentions[room].tickets[key]
-          keep = moment().isAfter time
-      else
-        @mentions[room] = tickets: {}
-      @mentions[room].tickets[key] = moment().add 5, 'minutes' if keep
+      ticket = attachment.author_name?.trim().toUpperCase()
+      continue unless Config.ticket.regex.test ticket
 
-      #Cleanup other mention expiries
-      for r, obj of @mentions
-        for k, t of @mentions[r].tickets
-          if moment().isAfter t
-            delete @mentions[r].tickets[k]
-
-      @robot.brain.set JiraBot.JIRA_ROOM_TICKET_MENTIONS, @mentions
-      @robot.brain.save()
-
-      unless keep
-        @robot.logger.info "Supressing ticket attachment for #{key} in #{room}"
+      key = "#{room}:#{ticket}"
+      if Utils.cache.get key
         removals.push attachment
+        @robot.logger.debug "Supressing ticket attachment for #{ticket} in #{room}"
+      else
+        Utils.cache.put key, true, Config.cache.mention.expiry
 
     message.attachments = _(message.attachments).difference removals
     return message
@@ -119,11 +94,11 @@ class JiraBot
         _attachments.push ticket.toAttachment()
         ticket
       .then (ticket) ->
-        Github.PullRequests.fromId ticket.id
+        Github.PullRequests.fromKey ticket.key unless Config.github.disabled
       .then (prs) ->
-        prs.toAttachment()
+        prs?.toAttachment()
       .then (attachments) ->
-        _attachments.push a for a in attachments
+        _attachments.push a for a in attachments if attachments
         _attachments
     ).then (attachments) =>
       @send msg, attachments: _(attachments).flatten()
@@ -150,6 +125,20 @@ class JiraBot
         footer: disableDisclaimer
         attachments: [ ticket.toAttachment no ]
 
+    @robot.on "JiraWebhookTicketInReview", (ticket, event) =>
+      assignee = Utils.lookupUserWithJira ticket.fields.assignee
+      assigneeText = ""
+      assigneeText = "Please message #{assignee} if you wish to provide feedback." if assignee isnt "Unassigned"
+
+      @adapter.dm Utils.lookupChatUsersWithJira(ticket.watchers),
+        text: """
+          A ticket you are watching is now ready for review.
+          #{assigneeText}
+        """
+        author: event.user
+        footer: disableDisclaimer
+        attachments: [ ticket.toAttachment no ]
+
     @robot.on "JiraWebhookTicketDone", (ticket, event) =>
       @adapter.dm Utils.lookupChatUsersWithJira(ticket.watchers),
         text: """
@@ -159,10 +148,27 @@ class JiraBot
         footer: disableDisclaimer
         attachments: [ ticket.toAttachment no ]
 
+    # Comment noitifications for watchers
     @robot.on "JiraWebhookTicketComment", (ticket, comment) =>
       @adapter.dm Utils.lookupChatUsersWithJira(ticket.watchers),
         text: """
           A ticket you are watching has a new comment from #{comment.author.displayName}:
+          ```
+          #{comment.body}
+          ```
+        """
+        author: comment.author
+        footer: disableDisclaimer
+        attachments: [ ticket.toAttachment no ]
+
+    # Comment noitifications for assignee
+    @robot.on "JiraWebhookTicketComment", (ticket, comment) =>
+      return unless ticket.fields.assignee
+      return if ticket.watchers.length > 0 and _(ticket.watchers).findWhere name: ticket.fields.assignee.name
+
+      @adapter.dm Utils.lookupChatUsersWithJira(ticket.fields.assignee),
+        text: """
+          A ticket you are assigned to has a new comment from #{comment.author.displayName}:
           ```
           #{comment.body}
           ```
@@ -184,7 +190,26 @@ class JiraBot
         footer: disableDisclaimer
         attachments: [ ticket.toAttachment no ]
 
+    # Assigned
+    @robot.on "JiraWebhookTicketAssigned", (ticket, user, event) =>
+      @adapter.dm user,
+        text: """
+          You were assigned to a ticket by #{event.user.displayName}:
+        """
+        author: event.user
+        footer: disableDisclaimer
+        attachments: [ ticket.toAttachment no ]
+
   registerEventListeners: ->
+
+    #Find Matches (for cross-script usage)
+    @robot.on "JiraFindTicketMatches", (msg, cb) =>
+      cb @matchJiraTicket msg
+
+    #Prepare Responses For Tickets (for cross-script usage)
+    @robot.on "JiraPrepareResponseForTickets", (msg) =>
+      @prepareResponseForJiraTickets msg
+
     #Create
     @robot.on "JiraTicketCreated", (ticket, room) =>
       @send message: room: room,
@@ -401,8 +426,8 @@ class JiraBot
     @robot.respond Config.commands.regex, (msg) =>
       [ __, project, command, summary ] = msg.match
       room = project or msg.message.room
-      project = Config.maps.projects[room]
-      type = Config.maps.types[command]
+      project = Config.maps.projects[room.toLowerCase()]
+      type = Config.maps.types[command.toLowerCase()]
 
       unless project
         channels = []

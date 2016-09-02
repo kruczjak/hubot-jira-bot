@@ -1,6 +1,7 @@
 _ = require "underscore"
 Fuse = require "fuse.js"
 fetch = require "node-fetch"
+cache = require "memory-cache"
 
 Config = require "./config"
 
@@ -74,10 +75,11 @@ class Utils
     return null
 
   @lookupUserWithGithub: (github) ->
-    return Promise.resolve() if not github
+    return Promise.resolve() unless github
 
-    github.fetch().then (user) ->
-      name = user.name or github.login
+    findMatch = (user) ->
+      name = user.name or user.login
+      return unless name
       users = Utils.robot.brain.users()
       users = _(users).keys().map (id) ->
         u = users[id]
@@ -89,10 +91,16 @@ class Utils
         keys: ['real_name']
         shouldSort: yes
         verbose: no
+        threshold: 0.55
 
       results = f.search name
       result = if results? and results.length >=1 then results[0] else undefined
-      return result
+      return Promise.resolve result
+
+    if github.fetch?
+      github.fetch().then findMatch
+    else
+      findMatch github
 
   @buildQueryString: (params) ->
     "?#{("#{encodeURIComponent k}=#{encodeURIComponent v}" for k,v of params when v).join "&"}"
@@ -101,5 +109,9 @@ class Utils
     f = new Fuse arr, _(keys: keys, shouldSort: yes, threshold: 0.3).extend opts
     results = f.search term
     result = if results? and results.length >=1 then results[0]
+
+  @cache:
+    put: (key, value, time=Config.cache.default.expiry) -> cache.put key, value, time
+    get: cache.get
 
 module.exports = Utils

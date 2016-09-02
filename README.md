@@ -2,7 +2,7 @@
 Lets you search for JIRA tickets, open
 them, transition them thru different states, comment on them, rank
 them up or down, start or stop watching them or change who is
-assigned to a ticket
+assigned to a ticket. Also, notifications for assignments, mentions and watched tickets.
 
 ###Dependencies:
 - moment
@@ -12,15 +12,53 @@ assigned to a ticket
 - fuse.js
 
 ###Configuration:
-- `HUBOT_JIRA_URL` `https://jira-domain.com:9090`
-- `HUBOT_JIRA_USERNAME`
+- `HUBOT_GITHUB_ORG` - Github Organization or Github User
+- `HUBOT_GITHUB_TOKEN` - Github Application Token
+- `HUBOT_JIRA_GITHUB_DISABLED` - Set to true if you wish to disable github integration
 - `HUBOT_JIRA_PASSWORD`
-- `HUBOT_JIRA_TYPES_MAP`  `{"story":"Story / Feature","bug":"Bug","task":"Task"}`
+- `HUBOT_JIRA_PRIORITIES_MAP` `[{"name":"Blocker","id":"1"},{"name":"Critical","id":"2"},{"name":"Major","id":"3"},{"name":"Minor","id":"4"},{"name":"Trivial","id":"5"}]`
 - `HUBOT_JIRA_PROJECTS_MAP`  `{"web":"WEB","android":"AN","ios":"IOS","platform":"PLAT"}`
 - `HUBOT_JIRA_TRANSITIONS_MAP` `[{"name":"triage","jira":"Triage"},{"name":"icebox","jira":"Icebox"},{"name":"backlog","jira":"Backlog"},{"name":"devready","jira":"Selected for Development"},{"name":"inprogress","jira":"In Progress"},{"name":"design","jira":"Design Triage"}]`
-- `HUBOT_JIRA_PRIORITIES_MAP` `[{"name":"Blocker","id":"1"},{"name":"Critical","id":"2"},{"name":"Major","id":"3"},{"name":"Minor","id":"4"},{"name":"Trivial","id":"5"}]`
-- `HUBOT_GITHUB_TOKEN` - Github Application Token
+- `HUBOT_JIRA_TYPES_MAP`  `{"story":"Story / Feature","bug":"Bug","task":"Task"}`
+- `HUBOT_JIRA_URL` `https://jira-domain.com:9090`
+- `HUBOT_JIRA_USERNAME`
+- `HUBOT_SLACK_BUTTONS` `{"watch":{"name":"watch","text":"Watch","type":"button","value":"watch","style":"primary"},"assign":{"name":"assign","text":"Assign to me","type":"button","value":"assign"},"devready":{"name":"devready","text":"Dev Ready","type":"button","value":"selected"},"inprogress":{"name":"inprogress","text":"In Progress","type":"button","value":"progress"},"rank":{"name":"rank","text":"Rank Top","type":"button","value":"top"},"running":{"name":"running","text":"Running","type":"button","value":"running"},"review":{"name":"review","text":"Review","type":"button","value":"review"},"resolved":{"name":"resolved","text":"Resolved","type":"button","style":"primary","value":"resolved"},"done":{"name":"done","text":"Done","type":"button","style":"primary","value":"done"}}`
+- `HUBOT_SLACK_PROJECT_BUTTON_STATE_MAP` `{"PLAT":{"inprogress":["review","running","resolved"],"review":["running","resolved"],"running":["resolved"],"resolved":["devready","inprogress"],"mention":["watch","assign","devready","inprogress","rank"]},"HAL":{"inprogress":["review","running","resolved"],"review":["running","resolved"],"running":["resolved"],"resolved":["devready","inprogress"],"mention":["watch","assign","devready","inprogress","rank"]},"default":{"inprogress":["review","done"],"review":["done"],"done":["devready, inprogress"],"mention":["watch","assign","devready","inprogress","rank"]}}`
+- `HUBOT_SLACK_VERIFICATION_TOKEN` - The slack verification token for your application
 
+Note that `HUBOT_JIRA_USERNAME` should be the JIRA username, this is
+not necessarily the username used if you log in via the web.  To
+determine a user's username, log in as that user via the web, and check
+the user profile.  Frequently, users may log in using an email address such
+as 'bob@somewhere.com' or a stem, such as 'bob'; these may or may not match
+the username in JIRA.
+
+####A note about chat:jira user lookup
+In order for direct messages (notifications) and a few other
+username based commands to work JiraBot attempts to match JIRA users with chat
+users by email address. This has been tested primarily on the [Hubot
+Slack adapter](https://github.com/slackhq/hubot-slack) and may not work without modification on others.
+The take away is that you must have the same e-mail address on both
+services for this to work as expected.
+
+####Notifications via Webhooks
+In order to receive JIRA notifications you will need to setup a webhook.
+You can find instructions to do so on [Atlassian's
+website](https://developer.atlassian.com/jiradev/jira-apis/webhooks).
+You will need your hubot to be reachable from the outside world for this
+to work. JiraBot is listening on `/hubot/jira-events`. Currently
+the following notifications are available:
+
+* You are mentioned in a ticket in either the description or in a
+  comment
+* You are assigned to a ticket
+* The following notifications apply if you are assigned to the ticket:
+    * A new comment is left on the ticket
+* The following notifications apply if you are watching the ticket in
+  question:
+    * Work begins on the ticket (enters the In Progress state or similar)
+    * The ticket is closed
+    * A new comment is left on the ticket
 
 ###The Definitive hubot JIRA Manual
 @hubot can help you *search* for JIRA tickets, *open*
@@ -120,6 +158,14 @@ message from @hubot) whenever any of the following events occur:
      - a comment is left on the ticket
      - the ticket is in progress
      - the ticket is resolved
+
+You will also be notified if:
+     - you are mentioned on the ticket
+     - you are assigned to the ticket
+
+If you are assigned to a ticket, you will be notified when:
+      - a comment is left on the ticket
+
 To enable or disable this feature you can send the following directly to hubot:
 
 > jira disable notifications
